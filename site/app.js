@@ -274,23 +274,40 @@ async function start() {
     byId("standings-view").setAttribute("aria-pressed", String(activeView === "standings"));
     if (activeView === "standings") { renderStandings(); return; }
     byId("round-title").textContent = round?.label || "日程未取得";
+    if (round) byId("round-title").append(element("span", "round-summary", `${round.matches.length}試合・日本時間（JST）`));
     byId("previous").disabled = !round || position === 0;
     byId("next").disabled = !round || position === rounds.length - 1;
     byId("message").textContent = round ? `${round.label}・${round.matches.length}試合 ／ 日本時間（JST）${active === "ALL" ? "・キックオフ順（日時未定は末尾）" : ""}`
       : "日程がまだ取得されていません。";
+    byId("message").hidden = !!round;
     const fragment = document.createDocumentFragment();
     for (const day of groupByDay(round?.matches || [])) {
       fragment.append(element("h3", "day-heading", day.label));
       for (const match of day.matches) {
         const state = { "予定": "scheduled", "終了": "finished", "延期": "postponed", "中止": "cancelled", "試合中": "live" }[match.status] || "scheduled";
         const row = element("article", `match match--${state}`);
-        const time = element("time", "kickoff", match.utcDate ? timeFormatter.format(new Date(match.utcDate)) : match.dateJst ? "時刻未定" : "日時未定");
-        if (match.utcDate) time.dateTime = match.utcDate;
-        const result = element("div", "result", resultText(match));
-        if (match.status === "終了") result.append(element("small", "", "終了"));
+        const scheduled = state === "scheduled";
+        const time = element(scheduled ? "time" : "span", scheduled ? "kickoff" : "kickoff kickoff--status",
+          scheduled ? match.utcDate ? timeFormatter.format(new Date(match.utcDate)) : match.dateJst ? "時刻未定" : "日時未定" : match.status);
+        if (scheduled && match.utcDate) time.dateTime = match.utcDate;
+        const hasScore = state === "finished" && Number.isFinite(match.score.home) && Number.isFinite(match.score.away);
+        const result = element("div", "result");
+        const homeScore = element("span", "score score--home", state === "finished" ? hasScore ? String(match.score.home) : "—" : "");
+        const awayScore = element("span", "score score--away", state === "finished" ? hasScore ? String(match.score.away) : "—" : "");
+        if (state === "finished") result.setAttribute("aria-label", resultText(match));
+        result.append(homeScore, awayScore);
         const code = active === "ALL" ? match.competition : active;
         const home = element("div", "team home", displayTeamName(match.home, code));
         const away = element("div", "team away", displayTeamName(match.away, code));
+        home.replaceChildren(element("span", "team-name", home.textContent));
+        away.replaceChildren(element("span", "team-name", away.textContent));
+        if (hasScore && match.score.home !== match.score.away) {
+          const homeWon = match.score.home > match.score.away;
+          home.className += homeWon ? " team--winner" : " team--loser";
+          away.className += homeWon ? " team--loser" : " team--winner";
+          homeScore.className += homeWon ? " score--winner" : " score--loser";
+          awayScore.className += homeWon ? " score--loser" : " score--winner";
+        }
         home.title = match.home;
         away.title = match.away;
         home.setAttribute("aria-label", match.home);

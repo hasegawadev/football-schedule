@@ -82,7 +82,7 @@ async function testController(competitions, expectedTabs, options = {}) {
   nodes.previous.click();
   assert.equal(nodes["round-title"].textContent, "第1節");
   assert.equal(nodes.previous.disabled, true);
-  assert.equal(matchRows(nodes)[0].children[2].textContent, "2 - 1");
+  assert.deepEqual(matchRows(nodes)[0].children[2].children.map(score => score.textContent), ["2", "1"]);
   nodes.next.click(); nodes.next.click();
   assert.equal(nodes["round-title"].textContent, "第3節");
   assert.equal(nodes.next.disabled, true);
@@ -196,7 +196,7 @@ async function testReadability() {
     const headings = nodes.matches.children.filter(node => node.className === "day-heading");
     assert.deepEqual(headings.map(node => node.textContent), ["11/6(金)", "11/7(土)", "日時未定"]);
     const rows = matchRows(nodes);
-    assert.deepEqual(rows.map(row => row.children[0].textContent), ["23:00", "0:00", "10:00", "11:00", "日時未定"]);
+    assert.deepEqual(rows.map(row => row.children[0].textContent), ["終了", "0:00", "延期", "試合中", "中止"]);
     assert.equal(rows[0].children[1].textContent, "Manchester United");
     assert.equal(rows[0].children[1].title, "Manchester United FC");
     assert.equal(rows[0].children[1].attributes["aria-label"], "Manchester United FC");
@@ -263,6 +263,39 @@ async function testFreshness() {
   console.log("Freshness: 24-hour boundary, unchanged-success heartbeat, failed-attempt isolation, view scope, version mismatch and missing status PASS");
 }
 
+async function testNewCardDOM() {
+  const fixtures = [
+    {...match(101,1),home:"Brighton & Hove Albion",away:"Tottenham Hotspur",score:{home:2,away:1}},
+    {...match(102,1),score:{home:1,away:2}},
+    {...match(103,1),score:{home:1,away:1}},
+    {...match(104,1),score:{home:null,away:null}},
+    match(105,1,"予定"),match(106,1,"延期"),match(107,1,"中止"),match(108,1,"試合中")
+  ];
+  const before=JSON.stringify(fixtures);
+  await testController({PL:fixtures},7,{inspect(nodes) {
+    const rows=matchRows(nodes);
+    assert.deepEqual(rows.map(r=>r.children[0].textContent),["終了","終了","終了","終了","5:00","延期","中止","試合中"]);
+    assert.deepEqual(rows.map(r=>r.children[2].children.map(s=>s.textContent)),[["2","1"],["1","2"],["1","1"],["—","—"],["",""],["",""],["",""],["",""]]);
+    assert.match(rows[0].children[1].className,/team--winner/);
+    assert.match(rows[0].children[3].className,/team--loser/);
+    assert.match(rows[0].children[2].children[0].className,/score--winner/);
+    assert.match(rows[1].children[1].className,/team--loser/);
+    assert.match(rows[1].children[3].className,/team--winner/);
+    assert.ok(rows[2].children.every(n=>!/(winner|loser)/.test(n.className)));
+    assert.ok(rows[3].children.every(n=>!/(winner|loser)/.test(n.className)));
+    assert.equal(rows[0].children[1].children[0].textContent,"Brighton & Hove Albion");
+    assert.equal(rows[0].children[3].children[0].textContent,"Tottenham Hotspur");
+    assert.equal(rows[0].children[1].title,"Brighton & Hove Albion");
+    assert.equal(nodes.message.hidden,true);
+    assert.equal(nodes["round-title"].children.at(-1).textContent,"8試合・日本時間（JST）");
+    tab(nodes,"すべて").click();
+    assert.ok(matchRows(nodes).every(r=>r.children[4].className==="match-meta"));
+    console.log("DOM OUTPUT:",JSON.stringify(rows.map(r=>({status:r.children[0].textContent,home:r.children[1].children[0].textContent,scores:r.children[2].children.map(s=>s.textContent),away:r.children[3].children[0].textContent}))));
+  }});
+  assert.equal(JSON.stringify(fixtures),before);
+  console.log("NEW DOM PASS: vertical scores, all states, wins/losses/draws, null scores, English names/title, nested name span, round summary, ALL metadata, input unchanged");
+}
+
 async function run() {
  await testController({PL:sample}, 7, {onlyPL:true});
  await testController(six, 7);
@@ -270,6 +303,7 @@ async function run() {
  await testController({}, 0, {file:true});
  await testCLNavigation();
  await testReadability();
+ await testNewCardDOM();
  await testFreshness();
  console.log("European schedule, navigation, results and freshness tests passed");
 }

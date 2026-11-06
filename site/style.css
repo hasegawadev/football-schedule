@@ -27,6 +27,8 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-off
 .home{grid-row:1}
 .away{grid-row:2}
 .team-name{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-emblem{display:flex;align-items:center;justify-content:center;flex:0 0 26px;width:26px;height:26px}
+.team-crest{display:block;width:26px;height:26px;object-fit:contain}
 .result{display:contents}
 .score{grid-column:3;min-width:0;text-align:right;font-size:16px;font-weight:400;line-height:1.6;font-variant-numeric:tabular-nums}
 .score--home{grid-row:1}

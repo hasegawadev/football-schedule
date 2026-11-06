@@ -301,6 +301,28 @@ async function start() {
         const away = element("div", "team away", displayTeamName(match.away, code));
         home.replaceChildren(element("span", "team-name", home.textContent));
         away.replaceChildren(element("span", "team-name", away.textContent));
+        for (const [team, id] of [[home, match.homeId], [away, match.awayId]]) {
+          if (!["PL", "BL1", "PD", "SA", "FL1", "CL"].includes(code) || !Number.isSafeInteger(id) || id <= 0) continue;
+          const slot = element("span", "team-emblem");
+          const crest = element("img", "team-crest");
+          crest.alt = "";
+          crest.width = 26;
+          crest.height = 26;
+          crest.loading = "lazy";
+          crest.decoding = "async";
+          crest.referrerPolicy = "no-referrer";
+          let triedSvg = false;
+          crest.addEventListener("error", () => {
+            if (!triedSvg) {
+              triedSvg = true;
+              crest.src = `https://crests.football-data.org/${id}.svg`;
+            } else crest.hidden = true;
+          });
+          crest.src = `https://crests.football-data.org/${id}.png`;
+          slot.setAttribute("aria-hidden", "true");
+          slot.append(crest);
+          team.replaceChildren(slot, team.children[0]);
+        }
         if (hasScore && match.score.home !== match.score.away) {
           const homeWon = match.score.home > match.score.away;
           home.className += homeWon ? " team--winner" : " team--loser";

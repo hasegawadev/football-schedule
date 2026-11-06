@@ -294,6 +294,33 @@ async function testNewCardDOM() {
   }});
   assert.equal(JSON.stringify(fixtures),before);
   console.log("NEW DOM PASS: vertical scores, all states, wins/losses/draws, null scores, English names/title, nested name span, round summary, ALL metadata, input unchanged");
+  const crestFixtures = [{...match(109,1,"予定"),homeId:57,awayId:73}, {...match(110,1,"予定"),homeId:null,awayId:"73"}];
+  await testController({PL:crestFixtures},7,{inspect(nodes) {
+    const rows = matchRows(nodes);
+    const team = rows[0].children[1];
+    const slot = team.children[0];
+    const crest = slot.children[0];
+    assert.equal(slot.className,"team-emblem");
+    assert.equal(slot.attributes["aria-hidden"],"true");
+    assert.equal(crest.src,"https://crests.football-data.org/57.png");
+    assert.equal(rows[0].children[3].children[0].children[0].src,"https://crests.football-data.org/73.png");
+    assert.equal(crest.alt,"");
+    assert.equal(crest.width,26);
+    assert.equal(crest.height,26);
+    assert.equal(crest.loading,"lazy");
+    assert.equal(team.children[1].className,"team-name");
+    assert.equal(team.children[1].textContent,"Test Home");
+    crest.handlers.error();
+    assert.equal(crest.src,"https://crests.football-data.org/57.svg");
+    crest.handlers.error();
+    assert.equal(crest.hidden,true);
+    assert.equal(team.children[0],slot);
+    assert.equal(rows[1].children[1].children[0].className,"team-name");
+    assert.equal(rows[1].children[3].children[0].className,"team-name");
+    tab(nodes,"すべて").click();
+    assert.equal(matchRows(nodes)[0].children[1].children[0].children[0].src,"https://crests.football-data.org/57.png");
+  }});
+  console.log("CREST DOM PASS: 26px decorative lazy images, IDs, PNG/SVG fallback, failed-image hiding, stable slot, missing IDs, ALL tab");
 }
 
 async function run() {

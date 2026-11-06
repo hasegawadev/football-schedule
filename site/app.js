@@ -91,20 +91,18 @@ function initialRound(rounds, now = Date.now()) {
 function freshnessState(data, status, active, view, now = Date.now()) {
   const codes = active === "ALL" ? Object.keys(COMPETITIONS) : [active];
   const part = view === "standings" ? "standings" : "matches";
-  const stale = [], unknown = [], confirmed = [];
+  const stale = [], confirmed = [];
   for (const code of codes) {
     const entry = status?.competitions?.[code]?.[part];
     const checked = Date.parse(entry?.lastSuccessAt);
     const version = part === "standings" ? data.standings?.[code]?.updatedAt : data.competitionUpdatedAt?.[code] || data.updatedAt;
-    if (!Number.isFinite(checked) || checked > now + 300000 || entry?.dataUpdatedAt !== version) unknown.push(TABS[code]);
-    else {
+    if (Number.isFinite(checked) && checked <= now + 300000 && entry?.dataUpdatedAt === version) {
       confirmed.push(checked);
       if (now - checked >= 24 * 3600000) stale.push(TABS[code]);
     }
   }
   const notices = [];
   if (stale.length) notices.push(`${stale.join("・")}は24時間以上、取得成功を確認できていません。日程・結果が古い可能性があります。`);
-  if (unknown.length) notices.push(`${unknown.join("・")}の取得成功日時を確認できません。再読み込みで最新のデータを確認してください。`);
   return { lastSuccessAt: confirmed.length === codes.length ? Math.min(...confirmed) : null, warning: notices.join(" ") };
 }
 

@@ -218,9 +218,9 @@ async function testFreshness() {
   failed.competitions.PL.matches.lastAttemptAt="2026-11-06T20:00:00Z";
   failed.competitions.PL.matches.error="HTTP 403";
   assert.match(freshnessState(base,failed,"PL","schedule",FIXED_NOW).warning,/24時間/);
-  assert.match(freshnessState(base,null,"PL","schedule",FIXED_NOW).warning,/確認できません/);
+  assert.deepEqual(freshnessState(base,null,"PL","schedule",FIXED_NOW),{lastSuccessAt:null,warning:""});
   const mismatched=makeStatus("2026-11-06T19:00:00Z"); mismatched.competitions.PL.matches.dataUpdatedAt="2026-11-02T00:00:00Z";
-  assert.match(freshnessState(base,mismatched,"PL","schedule",FIXED_NOW).warning,/確認できません/);
+  assert.deepEqual(freshnessState(base,mismatched,"PL","schedule",FIXED_NOW),{lastSuccessAt:null,warning:""});
   const fresh=makeStatus("2026-11-06T19:00:00Z");
   fresh.competitions.PL.standings.lastSuccessAt="2026-11-05T19:00:00Z";
   assert.equal(freshnessState(base,fresh,"PL","schedule",FIXED_NOW).warning,"");
@@ -242,7 +242,8 @@ async function testFreshness() {
   }});
   await testController({PL:sample},7,{statusError:true,inspect(nodes) {
     assert.ok(matchRows(nodes).length);
-    assert.match(nodes["freshness-warning"].textContent,/確認できません/);
+    assert.equal(nodes["freshness-warning"].hidden,true);
+    assert.equal(nodes["freshness-warning"].textContent,"");
   }});
   const timers=new Map();
   const polling={updatedAt:version,versions:{PL:version},fetchStatus:makeStatus("2026-11-06T19:00:00Z"),registerInterval:(fn,ms)=>timers.set(ms,fn),async inspect(nodes) {

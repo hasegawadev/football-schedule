@@ -41,7 +41,7 @@
   .round-nav button{padding:8px 4px;font-size:14px}
   #round-title{min-width:0;font-size:15px;overflow-wrap:anywhere}
   .match{grid-template-columns:minmax(0,1fr) 64px minmax(0,1fr);gap:8px;padding:16px 12px;min-height:104px}
-  .team{min-width:0;font-size:15px;line-height:1.5}
+  .team{min-width:0;font-size:18px;font-weight:700;line-height:1.5}
   .kickoff{grid-column:1/-1;font-size:14px;white-space:normal}
   .match--scheduled .kickoff{font-size:16px}
   .result,.match--finished .result{font-size:18px;line-height:1.4}

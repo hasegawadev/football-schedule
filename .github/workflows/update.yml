@@ -1,0 +1,104 @@
+name: Update match data
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-match-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      artifact_ready: ${{ steps.artifact.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests (fixed fixtures only)
+        run: |
+          python -m unittest discover -s tests -v
+          node tests/app.test.cjs
+      - name: Restore last fetch confirmations
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: data/fetch_status.json
+          key: fetch-status-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fetch-status-v1-
+      - name: Fetch fixtures and standings independently
+        id: fetch
+        continue-on-error: true
+        env:
+          FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
+          FOOTBALL_SCHEDULE_ENV: public
+        run: python scripts/fetch_matches.py
+      - name: Validate resulting public data
+        run: |
+          python scripts/validate_data.py data/matches.json --environment public
+          python scripts/check_release.py
+      - name: Cache fetch confirmations (including failed-run history)
+        continue-on-error: true
+        if: ${{ always() && steps.fetch.outcome != 'skipped' && hashFiles('data/fetch_status.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/fetch_status.json
+          key: fetch-status-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Commit meaningful data changes only
+        run: |
+          if git diff --quiet -- data/matches.json; then
+            echo 'No content changes; no commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- data/matches.json
+          git commit -m 'Update match data'
+          git push
+      - name: Package public data and fetch confirmations
+        run: python scripts/build_public.py
+      - name: Upload Pages artifact without heartbeat commits
+        id: artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+      - name: Report partial or total fetch failure
+        if: ${{ always() && steps.fetch.outcome == 'failure' }}
+        run: |
+          echo '::error::One or more competitions failed. Successful changes were saved; failed competitions retained their previous data.'
+          exit 1
+
+  deploy:
+    needs: update
+    if: ${{ always() && needs.update.outputs.artifact_ready == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages-deployment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy validated snapshots and heartbeat
+        id: deployment
+        uses: actions/deploy-pages@v4

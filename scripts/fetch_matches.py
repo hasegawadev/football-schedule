@@ -18,6 +18,7 @@ from app_config import enabled_competitions
 API_URL = "https://api.football-data.org/v4"
 COMPETITIONS = ("PL", "BL1", "PD", "SA", "FL1", "CL")
 OUTPUT = Path(__file__).resolve().parents[1] / "data" / "matches.json"
+RETRY_DELAYS = (7, 15)
 STATUSES = {
     "SCHEDULED": "予定", "TIMED": "予定",
     "IN_PLAY": "試合中", "PAUSED": "試合中", "EXTRA_TIME": "試合中",
@@ -90,19 +91,41 @@ def normalize(raw, code):
         raise FetchError(f"{code}: invalid match data") from exc
 
 
+def retry_delay(exc, attempt):
+    if exc.code == 429 and exc.headers:
+        header = exc.headers.get("Retry-After")
+        if header is not None:
+            try:
+                return max(1, min(60, int(str(header).strip())))
+            except ValueError:
+                pass
+    return RETRY_DELAYS[attempt]
+
+
+def fetch_json(url, api_key, code, label, allow_404=False):
+    request = Request(url, headers={"X-Auth-Token": api_key, "Accept": "application/json"})
+    prefix = f"{code}: {label}" if label else f"{code}:"
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            with urlopen(request, timeout=40) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            status_code = exc.code
+            delay = retry_delay(exc, attempt) if attempt < len(RETRY_DELAYS) else None
+            getattr(exc, "close", lambda: None)()
+            if allow_404 and status_code == 404:
+                return None
+            if (status_code == 429 or 500 <= status_code < 600) and delay is not None:
+                time.sleep(delay)
+                continue
+            # Never log request headers, credentials or remote response bodies.
+            raise FetchError(f"{prefix} API HTTP {status_code}") from None
+        except (URLError, TimeoutError, OSError, ValueError) as exc:
+            raise FetchError(f"{prefix} request failed ({type(exc).__name__})") from None
+
+
 def fetch_competition(code, api_key):
-    request = Request(
-        f"{API_URL}/competitions/{code}/matches",
-        headers={"X-Auth-Token": api_key, "Accept": "application/json"},
-    )
-    try:
-        with urlopen(request, timeout=40) as response:
-            payload = json.load(response)
-    except HTTPError as exc:
-        # Never log request headers, credentials or remote response bodies.
-        raise FetchError(f"{code}: API HTTP {exc.code}") from None
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
-        raise FetchError(f"{code}: API request failed ({type(exc).__name__})") from None
+    payload = fetch_json(f"{API_URL}/competitions/{code}/matches", api_key, code, "")
     if not isinstance(payload, dict) or not isinstance(payload.get("matches"), list) or not payload["matches"]:
         raise FetchError(f"{code}: empty/invalid response")
     matches = [normalize(raw, code) for raw in payload["matches"]]
@@ -183,17 +206,9 @@ def normalize_standings(payload, code):
 
 
 def fetch_standings(code, api_key):
-    request = Request(f"{API_URL}/competitions/{code}/standings",
-                      headers={"X-Auth-Token": api_key, "Accept": "application/json"})
-    try:
-        with urlopen(request, timeout=40) as response:
-            payload = json.load(response)
-    except HTTPError as exc:
-        if code == "CL" and exc.code == 404:
-            return {"season": "", "source": "https://www.football-data.org/", "groups": [], "status": "not_applicable"}
-        raise FetchError(f"{code}: standings API HTTP {exc.code}") from None
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
-        raise FetchError(f"{code}: standings request failed ({type(exc).__name__})") from None
+    payload = fetch_json(f"{API_URL}/competitions/{code}/standings", api_key, code, "standings", allow_404=(code == "CL"))
+    if payload is None:
+        return {"season": "", "source": "https://www.football-data.org/", "groups": [], "status": "not_applicable"}
     return normalize_standings(payload, code)
 
 
@@ -246,6 +261,7 @@ def update(codes, api_key, output=OUTPUT, include_standings=False, status_output
     data = copy.deepcopy(existing)
     failures, successes = {}, []
     changed = False
+    any_success = False
     api_started = False
 
     def record(code, parts, error=None, completed=None):
@@ -265,63 +281,95 @@ def update(codes, api_key, output=OUTPUT, include_standings=False, status_output
                 entry["dataUpdatedAt"] = (data.get("competitionUpdatedAt", {}).get(code) or data.get("updatedAt")) if part == "matches" else data["standings"][code].get("updatedAt")
             entries[part] = entry
 
+    def bind_legacy_versions():
+        if not changed:
+            # Bind legacy snapshots before the file-wide content time advances.
+            versions = data.setdefault("competitionUpdatedAt", {})
+            for old_code in existing.get("competitions", {}):
+                if existing.get("updatedAt"):
+                    versions.setdefault(old_code, existing["updatedAt"])
+
+    def apply_matches(code, matches):
+        nonlocal changed
+        validate_matches(matches, code)
+        matches_changed = content(matches) != content(data.get("competitions", {}).get(code))
+        updated = timestamp()
+        if matches_changed:
+            bind_legacy_versions()
+            data.setdefault("competitions", {})[code] = matches
+            data.setdefault("competitionUpdatedAt", {})[code] = updated
+            data["updatedAt"] = updated
+            changed = True
+        record(code, ("matches",), completed=updated)
+        print(f"{code}: {len(matches)} matches fetched; content {'changed' if matches_changed else 'unchanged'}")
+
+    def apply_standings(code, standing):
+        nonlocal changed
+        if standing is None:
+            raise ValueError("missing standings snapshot")
+        validate_standings(standing, code)
+        standing_changed = content(standing) != content(data.get("standings", {}).get(code))
+        updated = timestamp()
+        if standing_changed:
+            bind_legacy_versions()
+            data.setdefault("standings", {})[code] = {**standing, "updatedAt": updated}
+            data["updatedAt"] = updated
+            changed = True
+        record(code, ("standings",), completed=updated)
+        print(f"{code}: {sum(len(group['table']) for group in standing['groups'])} standings rows fetched")
+
+    def format_error(operation, exc):
+        # Isolate unexpected parser/schema errors too; never dump remote bodies/headers.
+        return str(exc) if isinstance(exc, FetchError) else f"{operation} failed ({type(exc).__name__})"
+
     for code in dict.fromkeys(codes):
         attempted = timestamp()
         parts = ("matches", "standings") if include_standings else ("matches",)
-        try:
-            operation = "match fetch"
-            standing = None
-            if not api_key:
-                raise FetchError("FOOTBALL_DATA_API_KEY environment variable is required")
-            if api_started:
-                time.sleep(7)
-            api_started = True
-            matches = fetch_competition(code, api_key)
-            if include_standings:
-                time.sleep(7)
-                operation = "standings fetch"
-                standing = fetch_standings(code, api_key)
-            # Validate the whole competition before replacing either of its snapshots.
-            operation = "match validation"
-            validate_matches(matches, code)
-            if "standings" in parts and standing is None:
-                raise ValueError("missing standings snapshot")
-            if standing is not None:
-                operation = "standings validation"
-                validate_standings(standing, code)
-            matches_changed = content(matches) != content(data.get("competitions", {}).get(code))
-            standing_changed = standing is not None and content(standing) != content(data.get("standings", {}).get(code))
-            updated = timestamp()
-            if matches_changed or standing_changed:
-                if not changed:
-                    # Bind legacy snapshots before the file-wide content time advances.
-                    versions = data.setdefault("competitionUpdatedAt", {})
-                    for old_code in existing.get("competitions", {}):
-                        if existing.get("updatedAt"):
-                            versions.setdefault(old_code, existing["updatedAt"])
-                data.setdefault("competitions", {})[code] = matches
-                if standing_changed:
-                    data.setdefault("standings", {})[code] = {**standing, "updatedAt": updated}
-                if matches_changed:
-                    data.setdefault("competitionUpdatedAt", {})[code] = updated
-                data["updatedAt"] = updated
-                changed = True
-            successes.append(code)
-            record(code, parts, completed=updated)
-            print(f"{code}: {len(matches)} matches fetched; content {'changed' if matches_changed else 'unchanged'}")
-            if standing is not None:
-                print(f"{code}: {sum(len(group['table']) for group in standing['groups'])} standings rows fetched")
-        except Exception as exc:
-            # Isolate unexpected parser/schema errors too; never dump remote bodies/headers.
-            reason = str(exc) if isinstance(exc, FetchError) else f"{operation} failed ({type(exc).__name__})"
-            failures[code] = reason
+        part_failures = {}
+        if not api_key:
+            reason = "FOOTBALL_DATA_API_KEY environment variable is required"
+            for part in parts:
+                part_failures[part] = reason
             record(code, parts, reason)
             print(f"ERROR {code}: {reason}; keeping previous {code} data", file=sys.stderr)
+        else:
+            try:
+                if api_started:
+                    time.sleep(7)
+                api_started = True
+                operation = "match fetch"
+                matches = fetch_competition(code, api_key)
+                operation = "match validation"
+                apply_matches(code, matches)
+            except Exception as exc:
+                reason = format_error(operation, exc)
+                part_failures["matches"] = reason
+                record(code, ("matches",), reason)
+                print(f"ERROR {code}: {reason}; keeping previous {code} matches", file=sys.stderr)
+            if include_standings:
+                try:
+                    time.sleep(7)
+                    operation = "standings fetch"
+                    standing = fetch_standings(code, api_key)
+                    operation = "standings validation"
+                    apply_standings(code, standing)
+                except Exception as exc:
+                    reason = format_error(operation, exc)
+                    part_failures["standings"] = reason
+                    record(code, ("standings",), reason)
+                    print(f"ERROR {code}: {reason}; keeping previous {code} standings", file=sys.stderr)
+
+        if len(part_failures) < len(parts):
+            any_success = True
+        if part_failures:
+            failures[code] = "; ".join(dict.fromkeys(part_failures.values()))
+        else:
+            successes.append(code)
 
     if changed:
         atomic_json(output, data)
         print(f"Saved JSON: {output}")
-    elif successes:
+    elif any_success:
         print("Successful fetches have no content changes; matches.json left unchanged")
     else:
         print("All requested competitions failed; matches.json left unchanged", file=sys.stderr)

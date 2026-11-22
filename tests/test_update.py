@@ -72,15 +72,34 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(fetcher.PartialFetchError) as raised:
                 fetcher.update(["PL","CL","SA"],"test-placeholder",self.path,True,now=NOW)
         saved=self.load()
-        self.assertEqual(saved["competitions"]["CL"],self.old["competitions"]["CL"])
+        self.assertEqual(saved["competitions"]["CL"][0]["score"]["home"],3)
         self.assertEqual(saved["standings"]["CL"],self.old["standings"]["CL"])
-        self.assertEqual(saved["competitionUpdatedAt"]["CL"],OLD)
+        self.assertEqual(saved["competitionUpdatedAt"]["CL"],"2026-11-06T00:00:00Z")
         self.assertEqual(saved["competitions"]["SA"][0]["score"]["home"],3)
         self.assertEqual(raised.exception.successes,["PL","SA"])
         self.assertIn("CL: HTTP 403",logs.getvalue())
         status=self.heartbeat()["competitions"]
-        self.assertEqual(status["CL"]["matches"]["lastSuccessAt"],OLD)
+        self.assertEqual(status["CL"]["matches"]["lastSuccessAt"],"2026-11-06T00:00:00Z")
+        self.assertEqual(status["CL"]["standings"]["lastSuccessAt"],OLD)
+        self.assertIn("CL: HTTP 403",status["CL"]["standings"]["error"])
         self.assertEqual(status["PL"]["standings"]["lastSuccessAt"],"2026-11-06T00:00:00Z")
+        validate_data(saved)
+
+    def test_matches_failure_still_saves_standings_independently(self):
+        logs=io.StringIO()
+        with patch.object(fetcher,"fetch_competition",side_effect=fetcher.FetchError("SA: API HTTP 500")),patch.object(fetcher,"fetch_standings",return_value=ranking("SA",12)),patch.object(fetcher.time,"sleep"),redirect_stderr(logs):
+            with self.assertRaises(fetcher.PartialFetchError) as raised:
+                fetcher.update(["SA"],"test-placeholder",self.path,True,now=NOW)
+        saved=self.load()
+        self.assertEqual(saved["competitions"]["SA"],self.old["competitions"]["SA"])
+        self.assertEqual(saved["standings"]["SA"]["groups"][0]["table"][0]["points"],12)
+        self.assertEqual(saved["competitionUpdatedAt"]["SA"],OLD)
+        self.assertEqual(raised.exception.successes,[])
+        self.assertIn("SA",raised.exception.failures)
+        status=self.heartbeat()["competitions"]["SA"]
+        self.assertEqual(status["matches"]["lastSuccessAt"],OLD)
+        self.assertIn("SA: API HTTP 500",status["matches"]["error"])
+        self.assertEqual(status["standings"]["lastSuccessAt"],"2026-11-06T00:00:00Z")
         validate_data(saved)
 
     def test_all_failure_preserves_bytes_and_does_not_advance_success(self):

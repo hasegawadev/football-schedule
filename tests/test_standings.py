@@ -107,14 +107,17 @@ class StandingTests(unittest.TestCase):
             self.assertEqual([call.args for call in sleep.call_args_list],[(7,),(7,),(7,)])
             self.assertEqual(set(saved["standings"]),{"PL","CL"})
 
-    def test_rank_fetch_failure_preserves_existing_bytes(self):
+    def test_rank_fetch_failure_preserves_existing_standings(self):
         with tempfile.TemporaryDirectory() as directory:
             output=Path(directory)/"matches.json"
-            original=json.dumps({"competitions":{"PL":[fetcher.normalize(match(),"PL")]}}).encode()
+            old_standing=fetcher.normalize_standings(standings("PL"),"PL")
+            original=json.dumps({"competitions":{"PL":[fetcher.normalize(match(),"PL")]},"standings":{"PL":old_standing}}).encode()
             output.write_bytes(original)
             with patch.object(fetcher,"urlopen",side_effect=[response(),HTTPError("https://api.football-data.org",403,"Forbidden",{},None)]),patch.object(fetcher.time,"sleep"):
                 with self.assertRaises(fetcher.FetchError): fetcher.update(["PL"],"test-placeholder",output,include_standings=True)
-            self.assertEqual(output.read_bytes(),original)
+            saved=json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved["competitions"]["PL"]),2)
+            self.assertEqual(saved["standings"]["PL"],old_standing)
 
 
     def test_cl_knockout_404_is_not_a_failed_league_table(self):

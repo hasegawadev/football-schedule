@@ -48,7 +48,7 @@ class FetchTests(unittest.TestCase):
                 output = Path(directory) / "matches.json"
                 original = json.dumps({"competitions":{"PL":[fetcher.normalize(match(),"PL")]}}).encode()
                 output.write_bytes(original)
-                with patch.object(fetcher, "urlopen", side_effect=error), self.assertRaises(fetcher.FetchError):
+                with patch.object(fetcher, "urlopen", side_effect=error), patch.object(fetcher.time, "sleep"), self.assertRaises(fetcher.FetchError):
                     fetcher.update(["PL"], "test-placeholder", output)
                 self.assertEqual(output.read_bytes(), original)
 
@@ -134,6 +134,24 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(saved["away"], "Test Away AFC")
         self.assertTrue(stream.getvalue().startswith("PL: 1 matches fetched"))
         self.assertNotIn("[要確認]", stream.getvalue())
+
+    def test_retries_http_429_and_5xx_then_succeeds(self):
+        err_429 = HTTPError("https://api.football-data.org", 429, "Rate limited", {"Retry-After": "12"}, None)
+        err_503 = HTTPError("https://api.football-data.org", 503, "Unavailable", {}, None)
+        with patch.object(fetcher, "urlopen", side_effect=[err_429, err_503, response("PL")]) as req, patch.object(fetcher.time, "sleep") as sleep:
+            matches = fetcher.fetch_competition("PL", "test-placeholder")
+        self.assertEqual(len(matches), 2)
+        self.assertEqual(req.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(12,), (15,)])
+
+    def test_does_not_retry_non_retryable_http_errors(self):
+        for code in (403, 404):
+            err = HTTPError("https://api.football-data.org", code, "Error", {}, None)
+            with self.subTest(code=code), patch.object(fetcher, "urlopen", side_effect=err) as req, patch.object(fetcher.time, "sleep") as sleep:
+                with self.assertRaises(fetcher.FetchError):
+                    fetcher.fetch_competition("SA", "test-placeholder")
+                self.assertEqual(req.call_count, 1)
+                sleep.assert_not_called()
 
 
 if __name__ == "__main__":
